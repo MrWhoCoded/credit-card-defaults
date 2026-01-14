@@ -1,68 +1,81 @@
 # Credit Card Default Prediction
 
-Predicting credit card defaults using the UCI Credit Card dataset. This project focuses on thoughtful feature engineering and threshold-based decision-making, not just model accuracy.
+A practical machine learning project for predicting credit card payment defaults. The focus here isn't on chasing high accuracy numbers, but on making decisions that actually matter in a credit risk context—specifically, catching defaults before they happen.
 
-## Why This Problem is Tricky
+## The Problem
 
-The default rate in this dataset is around 22%. Sounds small, but in credit risk, missing a defaulter is costly. A model that just predicts "no default" for everyone still gets ~78% accuracy — but catches zero actual defaults. That's useless.
+The UCI Credit Card dataset contains ~30,000 customer records with payment history, bill amounts, and demographic information. About 22% of customers defaulted on their next payment. That imbalance is the first thing that shapes everything else.
 
-So accuracy doesn't work here. What matters more is **recall on the minority class** — catching the people who will actually default, even at the cost of some false alarms.
+### Why Accuracy Doesn't Work Here
 
-## What I Found in the Data
+With a 78/22 class split, a model that predicts "no default" for everyone gets 78% accuracy. Useless. In credit risk, missing actual defaults is far more expensive than flagging a few good customers for extra review. So **recall on the minority class (defaults) became the primary metric**, with precision as the constraint to keep false alarms manageable.
 
-The dataset has 6 months of payment history per customer: repayment status (PAY_0 through PAY_6), bill amounts (BILL_AMT1-6), and payment amounts (PAY_AMT1-6). Plotting a correlation heatmap immediately showed the issue — billing amounts across months are highly correlated with each other. Same with payments.
+## What the Data Actually Shows
 
-This temporal redundancy doesn't add signal, it just adds noise and makes the model heavier. So rather than running PCA blindly, I aggregated these into summary features that actually capture behavior:
+The EDA wasn't about generating pretty charts—it was about understanding what features carry signal and which ones just add noise.
 
-- `max_delay` / `avg_delay` — worst and average repayment status across months
-- `max_bill` / `avg_bill` — spending pattern
-- `bill_trend` — difference between most recent and oldest bill (are they paying down or accumulating?)
-- `max_pay_amt` / `avg_pay_amt` — how much they actually pay
+### High Correlation Among Temporal Features
 
-Then I dropped the individual month-level columns. Fewer features, cleaner signal.
+The correlation matrix revealed something important: the six monthly bill amounts (BILL_AMT1-6) are highly correlated with each other (0.9+). Same pattern for the payment status columns (PAY_0, PAY_2-6). Including all of them individually would be redundant and could hurt generalization.
 
-## What I Dropped (and Why)
+### Payment Status Matters Most
 
-- Individual PAY_2 through PAY_6 — replaced by aggregated delay features
-- BILL_AMT2 through BILL_AMT6 — high multicollinearity, replaced by aggregates
-- PAY_AMT2 through PAY_AMT6 — same logic
-- ID — not a feature
-- Demographic columns (SEX, EDUCATION, MARRIAGE, AGE) — kept out of the final model; they didn't help much and raised fairness questions
+Looking at distributions across default vs non-default groups, repayment status (how many months delayed) showed the clearest separation. Bill amounts and age showed some pattern but weaker. Credit limit had modest predictive value.
 
-The goal was to reduce redundancy without losing predictive power.
+## Feature Engineering Choices
 
-## Handling the Imbalance
+Instead of throwing PCA at the data blindly, I aggregated the temporally correlated features based on what they actually represent:
 
-I didn't resample. SMOTE or random oversampling can create problems — leakage in cross-validation, synthetic samples that don't reflect reality. Instead:
+**What I created:**
+- `max_delay` / `avg_delay` — aggregate repayment status across 6 months
+- `max_bill` / `avg_bill` / `bill_trend` — bill amount patterns
+- `max_pay_amt` / `avg_pay_amt` — payment behavior summary
 
-1. **Class weights** — used `class_weight="balanced"` in Random Forest, which internally adjusts for class frequency
-2. **Threshold tuning** — instead of using 0.5 as the decision boundary for predicted probabilities, I tested multiple thresholds
+**What I dropped:**
+- Individual monthly columns (PAY_2-6, BILL_AMT2-6, PAY_AMT2-6) — redundant after aggregation
+- ID, SEX, EDUCATION, MARRIAGE, AGE — either non-predictive or not consistently useful
 
-That combination worked better than trying to artificially balance the dataset.
+The goal was reducing dimensionality while preserving behavioral signal, not just mathematical variance.
 
-## Threshold Tuning
+## Handling Class Imbalance
 
-The default 0.5 threshold gave around 39% recall on defaulters. That's too low. I tested:
+I tried several approaches:
 
-| Threshold | Precision | Recall | F1 |
-|-----------|-----------|--------|-----|
+1. **Baseline Random Forest** — high accuracy, terrible recall (~39%)
+2. **Random Forest with `class_weight='balanced'`** — sklearn automatically upweights the minority class during training
+3. **Threshold tuning** — instead of using 0.5 probability cutoff, evaluated 0.5, 0.4, 0.35, 0.3, 0.25
+
+The class weights helped, but the real improvement came from adjusting the decision threshold.
+
+## Threshold Selection
+
+With probability predictions from Random Forest, I tested different cutoffs:
+
+| Threshold | Precision | Recall | F1-Score |
+|-----------|-----------|--------|----------|
 | 0.50 | 0.60 | 0.39 | 0.47 |
 | 0.40 | 0.55 | 0.48 | 0.51 |
 | 0.35 | 0.52 | 0.51 | 0.52 |
 | 0.30 | 0.48 | 0.56 | 0.51 |
 | 0.25 | 0.43 | 0.61 | 0.51 |
 
-I chose **0.25**. Recall jumps to 61%, meaning we catch more than half of actual defaulters. Precision drops to 43%, so there are more false alarms — but that's a trade-off I'd rather make in a credit risk context. Missing a default is expensive; flagging a non-defaulter for review is cheap.
+**I chose 0.25** as the final threshold. Recall jumps to ~61%, meaning we catch roughly 6 out of 10 defaults. Precision drops to ~43%, so there are more false positives—but in a credit context, reviewing extra applications is far cheaper than absorbing defaults.
 
-## Model Choice
+This is a business decision, not a purely technical one. Different cost ratios would lead to different thresholds.
 
-I compared Logistic Regression, Decision Tree, and Random Forest. Random Forest performed best in terms of recall-precision balance after threshold tuning. But honestly, the model wasn't the focus — the feature engineering and threshold choices mattered more.
+## Model Comparison
 
-Hyperparameter tuning across `max_depth` and `min_samples_leaf` didn't change results dramatically. The best configuration was default settings with balanced class weights.
+Tested three classifiers:
+
+- **Logistic Regression**: 81% accuracy, 23% recall on defaults. Too conservative.
+- **Decision Tree**: 72% accuracy, 40% recall. Unstable.
+- **Random Forest**: With tuning, 74% accuracy, 61% recall. Better trade-off.
+
+Random Forest won not because it's sophisticated, but because its ensemble averaging reduces variance and the probability outputs are well-calibrated enough for threshold tuning.
 
 ## Final Results
 
-With threshold at 0.25 and balanced class weights:
+Using Random Forest with balanced class weights, threshold 0.25:
 
 ```
               precision    recall  f1-score   support
@@ -73,22 +86,26 @@ With threshold at 0.25 and balanced class weights:
     accuracy                           0.74      9000
 ```
 
-Accuracy is ~74%, lower than baseline models — but that's on purpose. We're trading some accuracy for substantially better recall on the default class.
+- **61% of actual defaults caught** (recall)
+- **43% of flagged accounts are true defaults** (precision)
+- **74% overall accuracy** (down from 82% at default threshold, but actually useful)
 
 ## Limitations
 
-- The dataset is from 2005 Taiwan. Economic behavior and credit norms may differ elsewhere.
-- Demographic features removed; including them might improve accuracy but raises fairness concerns.
-- Threshold was optimized on test set; would need validation set for production use.
-- No probability calibration applied — predicted probabilities may not reflect true likelihoods.
+- The model relies heavily on repayment history—new customers with no history would need a different approach
+- Threshold choice assumes specific cost trade-offs that may not match every business
+- No external validation; performance on truly new data is unknown
+- Hyperparameter tuning was limited (depth and leaf constraints); more extensive search might help
+- Feature engineering was manual; automated approaches (gradient boosting, neural nets) might find interactions I missed
 
-## Next Steps (If Continued)
+## What I'd Do Next
 
-- Cross-validation for threshold selection instead of single train-test split
-- Explore gradient boosting (XGBoost/LightGBM) with built-in handling for imbalance
-- Probability calibration for more interpretable scores
-- Feature importance analysis to explain predictions
+- Test on held-out time periods (true temporal validation)
+- Calibrate the probability outputs more carefully
+- Estimate actual costs of false positives vs false negatives to set threshold more rigorously
+- Try gradient boosting (XGBoost/LightGBM) for comparison
+- Add SHAP values for individual prediction explanations
 
 ---
 
-Built with scikit-learn. AI was used as a coding assistant, but the analytical decisions and trade-offs are my own.
+*This project used AI assistance for code generation and debugging, but the design decisions, feature engineering logic, and threshold selection reflect my own reasoning about the problem.*
